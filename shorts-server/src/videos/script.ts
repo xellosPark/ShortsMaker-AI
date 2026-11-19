@@ -1,5 +1,5 @@
 import { SAMPLE_TOPICS } from './samples.js';
-import type { Scene } from './video.types.js';
+import type { Scene, ScriptSource } from './video.types.js';
 
 export const PALETTES: [string, string][] = [
   ['0x4c1d95', '0xdb2777'],
@@ -13,7 +13,7 @@ export const PALETTES: [string, string][] = [
 export interface BuiltScript {
   topic: string;
   emoji: string;
-  scriptSource: 'sample' | 'template';
+  scriptSource: ScriptSource;
   scenes: Scene[];
   palette: [string, string];
 }
@@ -49,11 +49,11 @@ export function buildScript(rawTopic?: string): BuiltScript {
     scriptSource: 'template',
     palette,
     scenes: [
-      { label: '', title: topic, caption: `${topic}, 딱 30초만 투자해 보세요.` },
-      { label: 'POINT 1', title: '왜 중요할까?', caption: `먼저 ${topic}이(가) 왜 중요한지부터 짚어 볼게요.` },
-      { label: 'POINT 2', title: '핵심 한 가지', caption: '가장 중요한 핵심은 단 하나, 꾸준함이에요.' },
-      { label: 'POINT 3', title: '바로 해 보기', caption: '오늘 바로 작은 것 하나부터 실천해 보세요.' },
-      { label: '', title: '구독하고 더 보기', caption: '도움이 됐다면 저장하고 구독해 주세요.' },
+      { label: '', title: topic, keyword: 'abstract light', caption: `${topic}, 딱 30초만 투자해 보세요.` },
+      { label: 'POINT 1', title: '왜 중요할까?', keyword: 'thinking person', caption: `먼저 ${topic}이(가) 왜 중요한지부터 짚어 볼게요.` },
+      { label: 'POINT 2', title: '핵심 한 가지', keyword: 'focus', caption: '가장 중요한 핵심은 단 하나, 꾸준함이에요.' },
+      { label: 'POINT 3', title: '바로 해 보기', keyword: 'start running', caption: '오늘 바로 작은 것 하나부터 실천해 보세요.' },
+      { label: '', title: '구독하고 더 보기', keyword: 'smartphone hand', caption: '도움이 됐다면 저장하고 구독해 주세요.' },
     ],
   };
 }

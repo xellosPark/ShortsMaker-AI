@@ -75,6 +75,8 @@ export interface SceneRenderInput {
   videoDuration: number;
   palette: [string, string];
   voiceFile?: string;
+  /** 배경 스톡 영상 (없으면 그라데이션) */
+  bgFile?: string;
 }
 
 /** 장면 하나를 seg-i.mp4 로 렌더링 */
@@ -132,8 +134,12 @@ export async function renderScene(i: SceneRenderInput): Promise<string> {
   filters.push(`fade=t=in:st=0:d=0.25`, `fade=t=out:st=${(D - 0.25).toFixed(2)}:d=0.25`);
 
   const [c0, c1] = i.palette;
+  // 스톡 영상은 9:16 으로 꽉 채워 자르고, 글씨가 잘 보이게 살짝 어둡게
+  const bgChain = i.bgFile
+    ? `[0:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},fps=${FPS},setsar=1,drawbox=x=0:y=0:w=iw:h=ih:color=black@0.38:t=fill[bg0];[bg0]`
+    : `[0:v]`;
   const graph = [
-    `[0:v][2:v]overlay=x='-w+w*(${i.start.toFixed(3)}+t)/${i.videoDuration.toFixed(3)}':y=48,${filters.join(',')},format=yuv420p[v]`,
+    `${bgChain}[2:v]overlay=x='-w+w*(${i.start.toFixed(3)}+t)/${i.videoDuration.toFixed(3)}':y=48,${filters.join(',')},format=yuv420p[v]`,
     i.voiceFile
       ? `[1:a]aresample=44100,adelay=250:all=1,apad,atrim=0:${D.toFixed(3)}[a]`
       : `[1:a]atrim=0:${D.toFixed(3)}[a]`,
@@ -143,7 +149,9 @@ export async function renderScene(i: SceneRenderInput): Promise<string> {
   const out = `seg-${index}.mp4`;
   await ffmpeg(
     [
-      '-f', 'lavfi', '-i', `gradients=s=${W}x${H}:r=${FPS}:d=${D.toFixed(3)}:n=2:c0=${c0}:c1=${c1}:x0=0:y0=0:x1=${W}:y1=${H}:speed=0.015`,
+      ...(i.bgFile
+        ? ['-stream_loop', '-1', '-i', i.bgFile]
+        : ['-f', 'lavfi', '-i', `gradients=s=${W}x${H}:r=${FPS}:d=${D.toFixed(3)}:n=2:c0=${c0}:c1=${c1}:x0=0:y0=0:x1=${W}:y1=${H}:speed=0.015`]),
       ...(i.voiceFile ? ['-i', i.voiceFile] : ['-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo']),
       '-f', 'lavfi', '-i', `color=c=white@0.95:s=${W}x10:r=${FPS}:d=${D.toFixed(3)}`,
       '-filter_complex_script', graphFile,

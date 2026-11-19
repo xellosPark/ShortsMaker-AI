@@ -72,7 +72,7 @@ function Studio({ configPromise }: { configPromise: Promise<AppConfig> }) {
 
   const [error, submit] = useActionState(async (_prev: string | null, form: FormData) => {
     try {
-      const v = await api.create(String(form.get('topic') ?? ''), form.get('voice') === 'on')
+      const v = await api.create(String(form.get('topic') ?? ''), String(form.get('voice') ?? 'none'))
       setVideos((list) => [v, ...list])
       setCurrentId(v.id)
       return null
@@ -81,20 +81,28 @@ function Studio({ configPromise }: { configPromise: Promise<AppConfig> }) {
     }
   }, null)
 
+  // 삭제 확인은 브라우저 confirm() 대신 화면 안 대화상자로 (앱 내장 브라우저에선 confirm 이 바로 취소됨)
+  const [pendingDelete, setPendingDelete] = useState<VideoMeta | null>(null)
+  const askDelete = (id: string) => setPendingDelete(videos.find((v) => v.id === id) ?? null)
+
   const remove = async (id: string) => {
+    // 재생 중인 파일은 Windows 에서 잠겨 지워지지 않으니 먼저 미리보기를 비운다
+    if (currentId === id) setCurrentId(null)
     await api.remove(id)
     setVideos((list) => list.filter((v) => v.id !== id))
-    if (currentId === id) setCurrentId(null)
   }
 
   return (
     <>
       <main className="studio">
         <CreatePanel config={config} submit={submit} error={error} busy={busy} />
-        <Stage video={current} />
+        <Stage video={current} onRemove={askDelete} />
         <ScriptPanel video={current} />
       </main>
-      <Gallery videos={videos} currentId={currentId} onSelect={setCurrentId} onRemove={remove} />
+      <Gallery videos={videos} currentId={currentId} onSelect={setCurrentId} onRemove={askDelete} />
+      {pendingDelete && (
+        <DeleteDialog video={pendingDelete} onCancel={() => setPendingDelete(null)} onConfirm={remove} onDone={() => setPendingDelete(null)} />
+      )}
     </>
   )
 }
@@ -156,28 +164,107 @@ function CreatePanel({
           ))}
         </div>
 
-        {topic.trim() && !isSample && (
-          <p className="note">✍️ 직접 적은 주제는 지금은 기본 틀 대본으로 만들어요. AI 대본은 다음 단계에서 붙일게요.</p>
+        {topic.trim() && !isSample && !config.aiScript && (
+          <p className="note">✍️ Gemini 키를 넣으면 직접 적은 주제도 주제에 맞는 AI 대본으로 만들어요. 지금은 기본 틀 대본이에요.</p>
         )}
 
-        <div className="options">
-          <label className={`switch ${config.voiceAvailable ? '' : 'disabled'}`}>
-            <input type="checkbox" name="voice" defaultChecked={config.voiceAvailable} disabled={!config.voiceAvailable} />
-            <span className="track"><span className="thumb" /></span>
-            <span>
-              AI 내레이션
-              <small>{config.voiceAvailable ? '한국어 음성 (무료)' : '이 서버에서는 아직 지원 안 해요'}</small>
-            </span>
-          </label>
-          <button type="button" className="ghost" onClick={random}>
+        <div className="row-between">
+          <span className="field-label">목소리</span>
+          <button type="button" className="ghost small" onClick={random}>
             🎲 랜덤 주제
           </button>
+        </div>
+        <VoicePicker config={config} />
+
+        <div className="features">
+          <Feature on={config.aiScript} label="AI 대본" onText="Gemini" offText="키 필요" />
+          <Feature on={config.stockVideo} label="배경 영상" onText={config.stockProviders.join(' · ')} offText="키 필요" />
+          <Feature on label="음성" onText="Edge 신경망" offText="" />
         </div>
 
         <SubmitButton busy={busy} />
         {error && <p className="error">⚠️ {error}</p>}
       </form>
     </section>
+  )
+}
+
+function VoicePicker({ config }: { config: AppConfig }) {
+  const [voice, setVoice] = useState(config.defaultVoice)
+  const [playing, setPlaying] = useState<string | null>(null)
+  const [audio] = useState(() => new Audio())
+
+  useEffect(() => {
+    const stop = () => setPlaying(null)
+    audio.addEventListener('ended', stop)
+    audio.addEventListener('error', stop)
+    return () => {
+      audio.pause()
+      audio.removeEventListener('ended', stop)
+      audio.removeEventListener('error', stop)
+    }
+  }, [audio])
+
+  const preview = (id: string) => {
+    if (playing === id) {
+      audio.pause()
+      setPlaying(null)
+      return
+    }
+    audio.src = api.voicePreviewUrl(id)
+    void audio.play().catch(() => setPlaying(null))
+    setPlaying(id)
+  }
+
+  return (
+    <div className="voices" role="radiogroup" aria-label="목소리">
+      <input type="hidden" name="voice" value={voice} />
+      {config.voices.map((v) => (
+        <div
+          key={v.id}
+          role="radio"
+          aria-checked={voice === v.id}
+          tabIndex={0}
+          className={`voice ${voice === v.id ? 'active' : ''}`}
+          onClick={() => setVoice(v.id)}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setVoice(v.id)}
+        >
+          <span className="voice-name">{v.name}</span>
+          <span className="voice-desc">{v.desc}</span>
+          <button
+            type="button"
+            className={`play ${playing === v.id ? 'on' : ''}`}
+            title="미리듣기"
+            onClick={(e) => {
+              e.stopPropagation()
+              preview(v.id)
+            }}
+          >
+            {playing === v.id ? '■' : '▶'}
+          </button>
+        </div>
+      ))}
+      <div
+        role="radio"
+        aria-checked={voice === 'none'}
+        tabIndex={0}
+        className={`voice mute ${voice === 'none' ? 'active' : ''}`}
+        onClick={() => setVoice('none')}
+        onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setVoice('none')}
+      >
+        <span className="voice-name">🔇</span>
+        <span className="voice-desc">자막만</span>
+      </div>
+    </div>
+  )
+}
+
+function Feature({ on, label, onText, offText }: { on: boolean; label: string; onText: string; offText: string }) {
+  return (
+    <span className={`feature ${on ? 'on' : ''}`}>
+      <i />
+      {label} <b>{on ? onText : offText}</b>
+    </span>
   )
 }
 
@@ -194,12 +281,13 @@ function SubmitButton({ busy }: { busy: boolean }) {
 
 const STEPS = [
   { at: 0, label: '대본' },
-  { at: 10, label: '음성' },
+  { at: 12, label: '음성' },
+  { at: 22, label: '배경' },
   { at: 30, label: '렌더링' },
   { at: 100, label: '완료' },
 ]
 
-function Stage({ video }: { video: VideoMeta | null }) {
+function Stage({ video, onRemove }: { video: VideoMeta | null; onRemove: (id: string) => void }) {
   const bg = video ? `linear-gradient(160deg, ${hex(video.palette[0])}, ${hex(video.palette[1])})` : undefined
 
   return (
@@ -252,14 +340,21 @@ function Stage({ video }: { video: VideoMeta | null }) {
         </div>
       </div>
 
-      {video?.status === 'done' && video.videoUrl && (
+      {video && (video.status === 'done' || video.status === 'failed') && (
         <div className="stage-actions">
-          <a className="ghost" href={video.videoUrl} download={`${video.topic}.mp4`}>
-            ⬇ MP4 다운로드
-          </a>
-          <span className="meta">
-            {video.durationSec}초 · 1080×1920
-          </span>
+          {video.status === 'done' && video.videoUrl && (
+            <a className="ghost" href={video.videoUrl} download={`${video.topic}.mp4`}>
+              ⬇ MP4 다운로드
+            </a>
+          )}
+          <button
+            type="button"
+            className="ghost danger"
+            onClick={() => onRemove(video.id)}
+          >
+            <TrashIcon /> 삭제
+          </button>
+          {video.durationSec && <span className="meta">{video.durationSec}초 · 1080×1920</span>}
         </div>
       )}
     </section>
@@ -267,6 +362,12 @@ function Stage({ video }: { video: VideoMeta | null }) {
 }
 
 /* ───────────── 대본 ───────────── */
+
+const VOICE_NAMES: Record<string, string> = { sunhi: '선히', injoon: '인준', hyunsu: '현수' }
+const voiceLabel = (v: VideoMeta) =>
+  typeof v.voice === 'string'
+    ? `${VOICE_NAMES[v.voice] ?? v.voice}${v.voiceEngine === 'windows' ? ' (Windows)' : ''}`
+    : 'Windows 음성'
 
 function ScriptPanel({ video }: { video: VideoMeta | null }) {
   return (
@@ -280,10 +381,20 @@ function ScriptPanel({ video }: { video: VideoMeta | null }) {
             <span>{video.emoji}</span> {video.topic}
           </h2>
           <div className="tags">
-            <span className="tag">{video.scriptSource === 'sample' ? '추천 대본' : '기본 틀 대본'}</span>
-            <span className="tag">{video.voice ? '🔊 내레이션' : '🔇 자막만'}</span>
+            <span className="tag">
+              {video.scriptSource === 'ai' ? '✨ AI 대본' : video.scriptSource === 'sample' ? '추천 대본' : '기본 틀 대본'}
+            </span>
+            <span className="tag">{video.voice ? `🔊 ${voiceLabel(video)}` : '🔇 자막만'}</span>
+            {video.background && <span className="tag">{video.background === 'stock' ? '🎞 스톡 배경' : '🎨 그라데이션'}</span>}
             <span className="tag">장면 {video.scenes.length}개</span>
           </div>
+          {video.notes && video.notes.length > 0 && (
+            <ul className="notes">
+              {video.notes.map((n) => (
+                <li key={n}>{n}</li>
+              ))}
+            </ul>
+          )}
           <ol className="scenes">
             {video.scenes.map((s, i) => (
               <li key={i}>
@@ -292,6 +403,9 @@ function ScriptPanel({ video }: { video: VideoMeta | null }) {
                   {s.label && <span className="label">{s.label}</span>}
                   <strong>{s.title}</strong>
                   <p>{s.caption}</p>
+                  {(s.bgCredit || s.keyword) && (
+                    <span className="credit">🎞 {s.bgCredit ?? `검색어: ${s.keyword}`}</span>
+                  )}
                 </div>
                 {s.durationSec && <span className="dur">{s.durationSec.toFixed(1)}s</span>}
               </li>
@@ -304,6 +418,75 @@ function ScriptPanel({ video }: { video: VideoMeta | null }) {
 }
 
 /* ───────────── 내 영상 ───────────── */
+
+function DeleteDialog({
+  video,
+  onCancel,
+  onConfirm,
+  onDone,
+}: {
+  video: VideoMeta
+  onCancel: () => void
+  onConfirm: (id: string) => Promise<void>
+  onDone: () => void
+}) {
+  const [state, setState] = useState<'idle' | 'deleting' | string>('idle')
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && state !== 'deleting' && onCancel()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel, state])
+
+  const confirm = async () => {
+    setState('deleting')
+    try {
+      await onConfirm(video.id)
+      onDone()
+    } catch (e) {
+      setState(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" onClick={() => state !== 'deleting' && onCancel()}>
+      <div className="dialog" role="alertdialog" aria-modal="true" aria-labelledby="del-title" onClick={(e) => e.stopPropagation()}>
+        <div className="dialog-icon">
+          <TrashIcon />
+        </div>
+        <h3 id="del-title">영상을 삭제할까요?</h3>
+        <p className="dialog-topic">
+          {video.emoji} {video.topic}
+        </p>
+        <p className="muted">삭제하면 영상 파일까지 지워지고 되돌릴 수 없어요.</p>
+        {state !== 'idle' && state !== 'deleting' && <p className="error">⚠️ 삭제하지 못했어요: {state}</p>}
+        <div className="dialog-actions">
+          <button type="button" className="ghost" onClick={onCancel} disabled={state === 'deleting'}>
+            취소
+          </button>
+          <button type="button" className="danger-solid" onClick={confirm} disabled={state === 'deleting'} autoFocus>
+            {state === 'deleting' ? '삭제 중…' : '삭제'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden>
+      <path
+        d="M9 3h6m-9 4h12m-1 0-.7 11.2a2 2 0 0 1-2 1.8H9.7a2 2 0 0 1-2-1.8L7 7m3 4v5m4-5v5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
 
 const timeAgo = (iso: string) => {
   const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000)
@@ -355,6 +538,20 @@ function Gallery({
                 <span className="thumb-state">{v.status === 'failed' ? '실패' : `${v.progress}%`}</span>
               )}
               {v.durationSec && <span className="badge">{Math.round(v.durationSec)}초</span>}
+              {v.status !== 'queued' && v.status !== 'rendering' && (
+                <button
+                  type="button"
+                  className="card-delete"
+                  title="삭제"
+                  aria-label={`${v.topic} 삭제`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onRemove(v.id)
+                  }}
+                >
+                  <TrashIcon />
+                </button>
+              )}
             </div>
             <div className="card-body">
               <p className="card-title">
@@ -362,19 +559,6 @@ function Gallery({
               </p>
               <div className="card-foot">
                 <span>{timeAgo(v.createdAt)}</span>
-                {v.status !== 'queued' && v.status !== 'rendering' && (
-                  <button
-                    type="button"
-                    className="icon"
-                    title="삭제"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      if (confirm('이 영상을 삭제할까요?')) onRemove(v.id)
-                    }}
-                  >
-                    🗑
-                  </button>
-                )}
               </div>
             </div>
           </article>

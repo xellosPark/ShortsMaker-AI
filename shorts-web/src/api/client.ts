@@ -2,6 +2,8 @@ export interface Scene {
   label: string;
   title: string;
   caption: string;
+  keyword?: string;
+  bgCredit?: string;
   durationSec?: number;
 }
 
@@ -11,8 +13,12 @@ export interface VideoMeta {
   id: string;
   topic: string;
   emoji: string;
-  scriptSource: 'sample' | 'template';
-  voice: boolean;
+  scriptSource: 'sample' | 'ai' | 'template';
+  /** 목소리 id (예전 영상은 true/false) */
+  voice: string | boolean | null;
+  voiceEngine?: string;
+  background?: 'stock' | 'gradient';
+  notes?: string[];
   palette: [string, string];
   status: VideoStatus;
   progress: number;
@@ -24,8 +30,18 @@ export interface VideoMeta {
   error?: string;
 }
 
+export interface Voice {
+  id: string;
+  name: string;
+  desc: string;
+}
+
 export interface AppConfig {
-  voiceAvailable: boolean;
+  voices: Voice[];
+  defaultVoice: string;
+  aiScript: boolean;
+  stockVideo: boolean;
+  stockProviders: string[];
   samples: { topic: string; emoji: string }[];
 }
 
@@ -46,8 +62,9 @@ export const api = {
   config: () => req<AppConfig>('/config'),
   list: () => req<VideoMeta[]>('/videos'),
   get: (id: string) => req<VideoMeta>(`/videos/${id}`),
-  create: (topic: string, voice: boolean) =>
+  create: (topic: string, voice: string) =>
     req<VideoMeta>('/videos', { method: 'POST', body: JSON.stringify({ topic, voice }) }),
+  voicePreviewUrl: (id: string) => `/api/voices/${id}/preview`,
   remove: (id: string) => req<void>(`/videos/${id}`, { method: 'DELETE' }),
 };
 

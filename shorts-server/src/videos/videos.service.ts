@@ -1,10 +1,12 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { generateScript, geminiAvailable } from './gemini.js';
+import { fetchBackground, pexelsAvailable } from './pexels.js';
 import { concatScenes, renderScene } from './render.js';
 import { buildScript } from './script.js';
-import { synthesize, ttsAvailable } from './tts.js';
+import { synthesize, type VoiceId } from './tts.js';
 import type { VideoMeta } from './video.types.js';
 
 export const MEDIA_DIR = resolve(process.env.MEDIA_DIR ?? 'media');
@@ -19,6 +21,7 @@ export class VideosService implements OnModuleInit {
   async onModuleInit() {
     await mkdir(MEDIA_DIR, { recursive: true });
     for (const id of await readdir(MEDIA_DIR)) {
+      if (id.startsWith('_')) continue;
       try {
         const meta = JSON.parse(await readFile(join(MEDIA_DIR, id, 'meta.json'), 'utf8')) as VideoMeta;
         if (meta.status === 'queued' || meta.status === 'rendering') {
@@ -45,19 +48,21 @@ export class VideosService implements OnModuleInit {
 
   async remove(id: string) {
     const v = this.get(id);
-    if (v.status === 'queued' || v.status === 'rendering') return;
+    if (v.status === 'queued' || v.status === 'rendering') throw new ConflictException('만드는 중인 영상은 지울 수 없어요.');
+    // Windows 에서 재생 중이던 파일이 잠깐 잠겨 있을 수 있어 몇 번 다시 시도
+    await rm(join(MEDIA_DIR, id), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
     this.videos.delete(id);
-    await rm(join(MEDIA_DIR, id), { recursive: true, force: true });
   }
 
-  create(topic: string | undefined, voice: boolean): VideoMeta {
+  create(topic: string | undefined, voice: VoiceId | null): VideoMeta {
     const script = buildScript(topic);
     const meta: VideoMeta = {
       id: randomUUID().slice(0, 8),
       topic: script.topic,
       emoji: script.emoji,
       scriptSource: script.scriptSource,
-      voice: voice && ttsAvailable(),
+      voice,
+      notes: [],
       palette: script.palette,
       status: 'queued',
       progress: 0,
@@ -81,12 +86,32 @@ export class VideosService implements OnModuleInit {
     await mkdir(work, { recursive: true });
     const started = Date.now();
     try {
-      await this.update(meta, { status: 'rendering', progress: 5, step: '대본 준비' });
+      const notes = meta.notes ?? [];
+      await this.update(meta, { status: 'rendering', progress: 3, step: '대본 준비' });
 
+      // 1) 직접 적은 주제 → Gemini 로 주제에 맞는 대본
+      if (meta.scriptSource === 'template') {
+        if (geminiAvailable()) {
+          await this.update(meta, { progress: 5, step: 'AI가 대본 쓰는 중' });
+          try {
+            const ai = await generateScript(meta.topic);
+            await this.update(meta, { scenes: ai.scenes, emoji: ai.emoji, scriptSource: 'ai' });
+            this.log.log(`script by ${ai.model}`);
+          } catch (e) {
+            notes.push(`AI 대본을 만들지 못해 기본 대본을 썼어요. (${e instanceof Error ? e.message : e})`);
+          }
+        } else {
+          notes.push('Gemini 키가 없어 기본 대본을 썼어요.');
+        }
+      }
+
+      // 2) 음성
       let durations: number[];
       if (meta.voice) {
-        await this.update(meta, { progress: 10, step: '음성 만드는 중' });
-        const voiceLens = await synthesize(work, meta.scenes.map((s) => s.caption));
+        await this.update(meta, { progress: 12, step: '음성 만드는 중' });
+        const { durations: voiceLens, engine } = await synthesize(work, meta.scenes.map((s) => s.caption), meta.voice as VoiceId);
+        if (engine !== 'edge') notes.push('Edge 음성에 연결하지 못해 Windows 음성으로 만들었어요.');
+        meta.voiceEngine = engine;
         durations = voiceLens.map((d) => Math.max(2.5, d + 0.65));
       } else {
         durations = meta.scenes.map((s) => Math.max(3, s.caption.length * 0.11 + 1.4));
@@ -95,6 +120,37 @@ export class VideosService implements OnModuleInit {
       meta.scenes.forEach((s, i) => (s.durationSec = durations[i]));
       const total = durations.reduce((a, b) => a + b, 0);
 
+      // 3) 장면별 배경 스톡 영상
+      const bgFiles: (string | undefined)[] = meta.scenes.map(() => undefined);
+      if (pexelsAvailable()) {
+        await this.update(meta, { progress: 22, step: '배경 영상 찾는 중' });
+        const used = new Set<string>();
+        for (const [i, scene] of meta.scenes.entries()) {
+          const keywords = scene.keywords?.length ? scene.keywords : scene.keyword ? [scene.keyword] : [];
+          if (!keywords.length) continue;
+          try {
+            const bg = await fetchBackground(keywords, join(MEDIA_DIR, '_cache'), used);
+            if (bg) {
+              used.add(bg.id);
+              bgFiles[i] = bg.file;
+              scene.bgCredit = bg.credit;
+              scene.keyword = bg.keyword;
+            }
+          } catch (e) {
+            this.log.warn(`stock "${scene.keyword}": ${e instanceof Error ? e.message : e}`);
+          }
+        }
+        const found = bgFiles.filter(Boolean).length;
+        if (found < meta.scenes.length)
+          notes.push(`주제에 맞는 배경 영상을 ${meta.scenes.length}개 중 ${found}개만 찾아서, 나머지는 엉뚱한 영상 대신 그라데이션으로 채웠어요.`);
+        meta.background = found > 0 ? 'stock' : 'gradient';
+      } else {
+        meta.background = 'gradient';
+        notes.push('스톡 영상 키(Pixabay 또는 Pexels)가 없어 그라데이션 배경을 썼어요.');
+      }
+      meta.notes = notes;
+
+      // 4) 장면 렌더링
       const segments: string[] = [];
       let start = 0;
       for (const [index, scene] of meta.scenes.entries()) {
@@ -113,6 +169,7 @@ export class VideosService implements OnModuleInit {
             videoDuration: total,
             palette: meta.palette,
             voiceFile: meta.voice ? `voice-${index}.wav` : undefined,
+            bgFile: bgFiles[index],
           }),
         );
         start += durations[index];
