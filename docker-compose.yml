@@ -1,0 +1,58 @@
+# ShortsMaker AI — NAS(Container Manager) 배포용
+# postgres/redis 데이터는 1단계에서 만든 볼륨을 그대로 씁니다.
+name: shorts
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: shorts
+      POSTGRES_USER: shorts
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+  api:
+    build: ./shorts-server
+    image: shorts-server:latest
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: shorts
+      DB_USER: shorts
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      - postgres
+      - redis
+
+  web:
+    build: ./shorts-web
+    image: shorts-web:latest
+    restart: unless-stopped
+    ports:
+      - "8090:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+    external: true
+    name: shorts_pgdata
+  redisdata:
+    external: true
+    name: shorts_redisdata
